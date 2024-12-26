@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ИИ Генератор Чертежей</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>ИИ Генератор Чертежей</h1>
+    <div id="input-container">
+        <input type="text" id="user-input" placeholder="Введите описание объекта (пример: 'стол 120x70x80')">
+         <button id="mic-button">🎤</button>
+        <button id="generate-button">Создать чертеж</button>
+
+    </div>
+    <style>
+        body {
+    font-family: sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+#input-container {
+    margin: 20px;
+    display: flex;
+}
+#user-input {
+    padding: 10px;
+    border: 1px solid #ccc;
+    flex: 1;
+    margin-right: 10px;
+}
+#generate-button, #mic-button {
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    cursor: pointer;
+    margin-left: 5px;
+}
+#drawing-area {
+    border: 1px solid black;
+    margin-top: 20px;
+    width: 800px;
+    height: 600px;
+}
+    </style>
+    <div id="drawing-area"></div>
+      <script src="https://cdn.jsdelivr.net/npm/p5@1.9.0/lib/p5.js"></script>
+    <script src="node_modules/@tensorflow/tfjs/dist/tf.min.js"></script>
+    <script src="node_modules/natural/lib/natural.js"></script>
+    <script src="node_modules/annyang/dist/annyang.min.js"></script>
+    <script src="node_modules/opencv.js/opencv.js"></script>
+    <script src="script.js">
+        import * as tf from '@tensorflow/tfjs';
+import natural from 'natural';
+import annyang from 'annyang';
+import * as cv from 'opencv.js';
+
+const drawingArea = document.getElementById('drawing-area');
+const userInput = document.getElementById('user-input');
+const generateButton = document.getElementById('generate-button');
+const micButton = document.getElementById('mic-button');
+
+
+const objectToShapeMap = {
+    'брусок': 'parallelepiped',
+    'кирпич': 'parallelepiped',
+    'пластина': 'parallelepiped',
+    'квадрат': 'square',
+    'прямоугольник': 'rectangle',
+    'круг': 'circle',
+    'треугольник': 'triangle',
+    'цилиндр': 'cylinder',
+    'конус': 'cone',
+     'сфера': 'sphere',
+     'стол': 'table',
+     'стул': 'chair',
+     'дверь': 'door'
+
+};
+
+let p5Instance = null;
+
+async function init() {
+        console.log("TensorFlow.js version:", tf.version.tfjs);
+        await tf.ready();
+        console.log("TensorFlow.js is ready.");
+
+
+    if (annyang) {
+            annyang.setLanguage('ru-RU')
+          let commands = {
+                'чертеж *text': (text) => {
+                    userInput.value = text
+                    generateDrawing(text)
+                },
+                 'нарисуй *text': (text) => {
+                    userInput.value = text
+                    generateDrawing(text)
+                 },
+                'сгенерируй *text': (text) => {
+                    userInput.value = text
+                    generateDrawing(text)
+                 }
+            };
+          annyang.addCommands(commands);
+     }else{
+        alert("Speech recognition not supported in this browser.")
+     }
+
+
+     micButton.addEventListener('click', () => {
+            if(annyang.isListening()) {
+                  annyang.abort();
+                  micButton.style.backgroundColor = '#4CAF50'
+                  console.log("Stop Listening...")
+             }else{
+               annyang.start();
+                micButton.style.backgroundColor = 'red'
+              console.log("Start Listening...")
+             }
+        })
+
+       generateButton.addEventListener('click', () => {
+        const text = userInput.value.toLowerCase();
+        generateDrawing(text);
+    });
+    }
+  function generateDrawing(text) {
+      if(p5Instance){
+         p5Instance.remove()
+         drawingArea.innerHTML = "";
+      }
+
+        const intermediateRepresentation = parseInput(text);
+
+        if (intermediateRepresentation) {
+           p5Instance = new p5(sketch(intermediateRepresentation), drawingArea);
+        } else {
+             alert("Не удалось распознать фигуру. Попробуйте более простое описание");
+        }
+        userInput.value = '';
+    }
+
+
+  function parseInput(text) {
+    let shape = null;
+    let dimensions = null;
+    let objectName = null;
+
+        for (const obj in objectToShapeMap) {
+            if (text.includes(obj)) {
+                shape = objectToShapeMap[obj];
+                 objectName = obj;
+                 break;
+                }
+        }
+
+
+        if (!shape) {
+            for(const figure of Object.values(objectToShapeMap)){
+                if (text.includes(figure)) {
+                        shape = figure;
+                       break;
+                   }
+              }
+         }
+     const dimensionMatch = text.match(/(\d+)\s*[xх*]\s*(\d+)(?:\s*[xх*]\s*(\d+))?/);
+     const radiusMatch = text.match(/радиус\s*(\d+)/);
+    const singleDimensionMatch = text.match(/(\d+)(?!\s*[xх*])/);
+        if (radiusMatch && shape === 'circle') {
+              dimensions = { radius: parseInt(radiusMatch[1], 10) }
+            } else if (dimensionMatch) {
+               const width = parseInt(dimensionMatch[1], 10);
+                const height = parseInt(dimensionMatch[2], 10);
+                  const depth = dimensionMatch[3] ? parseInt(dimensionMatch[3], 10) : null;
+                dimensions = { width: width, height: height };
+                 if (depth){
+                   dimensions.depth = depth;
+                   }
+             } else if (singleDimensionMatch && (shape === 'square' || shape === 'circle' || shape === 'sphere')) {
+                  dimensions = { size: parseInt(singleDimensionMatch[1], 10) };
+             } else if(singleDimensionMatch && shape == 'triangle') {
+                    dimensions = { base: parseInt(singleDimensionMatch[1], 10), height: parseInt(singleDimensionMatch[1], 10) };
+                }
+              if (shape === 'parallelepiped' && !dimensions){
+                const singleDimensionMatch = text.match(/(\d+)/);
+                 if (singleDimensionMatch) {
+                   dimensions = {width: parseInt(singleDimensionMatch[1], 10), height: parseInt(singleDimensionMatch[1], 10)};
+                }
+            }
+
+            if (shape == 'table') {
+                const dimensionMatch = text.match(/(\d+)\s*[xх*]\s*(\d+)\s*[xх*]\s*(\d+)/);
+                if(dimensionMatch){
+                     dimensions = { width: parseInt(dimensionMatch[1], 10), height: parseInt(dimensionMatch[2], 10),  depth: parseInt(dimensionMatch[3], 10)};
+                }else {
+                    const singleDimensionMatch = text.match(/(\d+)/);
+                     if (singleDimensionMatch) {
+                      dimensions = {width: parseInt(singleDimensionMatch[1], 10), height: parseInt(singleDimensionMatch[1], 10), depth: parseInt(singleDimensionMatch[1], 10)};
+                    }
+                }
+            }
+              if (shape == 'chair') {
+                 const dimensionMatch = text.match(/(\d+)\s*[xх*]\s*(\d+)\s*[xх*]\s*(\d+)/);
+                if(dimensionMatch){
+                  dimensions = { width: parseInt(dimensionMatch[1], 10), height: parseInt(dimensionMatch[2], 10),  depth: parseInt(dimensionMatch[3], 10)};
+                }else {
+                    const singleDimensionMatch = text.match(/(\d+)/);
+                     if (singleDimensionMatch) {
+                       dimensions = {width: parseInt(singleDimensionMatch[1], 10), height: parseInt(singleDimensionMatch[1], 10), depth: parseInt(singleDimensionMatch[1], 10)};
+                     }
+                }
+            }
+               if (shape == 'door') {
+                const dimensionMatch = text.match(/(\d+)\s*[xх*]\s*(\d+)/);
+                 if(dimensionMatch){
+                     dimensions = { width: parseInt(dimensionMatch[1], 10), height: parseInt(dimensionMatch[2], 10) };
+                }else {
+                    const singleDimensionMatch = text.match(/(\d+)/);
+                     if (singleDimensionMatch) {
+                      dimensions = {width: parseInt(singleDimensionMatch[1], 10), height: parseInt(singleDimensionMatch[1], 10)};
+                     }
+                }
+            }
+
+            if(shape in ['cone', 'cylinder']){
+               if(singleDimensionMatch){
+                   dimensions['radius'] =  parseInt(singleDimensionMatch[1], 10);
+               }
+                const heightMatch = text.match(/высота\s*(\d+)/)
+                if(heightMatch) {
+                 dimensions['height'] = parseInt(heightMatch[1], 10)
+                }
+            }
+
+
+
+    return { shape, dimensions };
+}
+
+
+function sketch(intermediateRepresentation) {
+   return function(p) {
+        p.setup = () => {
+            p.createCanvas(800, 600);
+            p.background(255);
+              p.noFill();
+            drawShape(p, intermediateRepresentation.shape, intermediateRepresentation.dimensions);
+        };
+
+         function drawShape(p, shape, dimensions) {
+              const centerX = 400;
+                const centerY = 300;
+             p.stroke(0);
+
+        switch(shape){
+                case 'parallelepiped':
+                 const width = dimensions.width || 100;
+                 const height = dimensions.height || 50;
+                   p.rectMode(p.CENTER);
+                 p.rect(centerX, centerY, width, height)
+                 addDimension(p, centerX - width/2, centerY - height/2, width, 'horizontal', width, height);
+                 addDimension(p, centerX - width/2, centerY - height/2, height, 'vertical', width, height);
+                break;
+                  case 'rectangle':
+                 const widthRect = dimensions.width || 100;
+                 const heightRect = dimensions.height || 50;
+                   p.rectMode(p.CENTER);
+                 p.rect(centerX, centerY, widthRect, heightRect)
+                  addDimension(p, centerX - widthRect/2, centerY - heightRect/2, widthRect, 'horizontal', widthRect, heightRect);
+                 addDimension(p, centerX - widthRect/2, centerY - heightRect/2, heightRect, 'vertical', widthRect, heightRect);
+                  break;
+                 case 'square':
+                      const size = dimensions.size || 100;
+                      p.rectMode(p.CENTER);
+                       p.rect(centerX, centerY, size, size)
+                       addDimension(p, centerX - size/2, centerY - size/2, size, 'horizontal', size, size);
+                      addDimension(p, centerX - size/2, centerY - size/2, size, 'vertical', size, size);
+                       break;
+                case 'circle':
+                     const radius = dimensions.radius || dimensions.size || 50;
+                     p.ellipseMode(p.CENTER)
+                      p.circle(centerX, centerY, radius * 2);
+                     addDimension(p, centerX - radius, centerY , radius * 2, 'horizontal', radius*2, radius*2);
+
+                      break;
+                 case 'triangle':
+                    const base = dimensions.base || 100;
+                    const heightTriangle = dimensions.height || base
+                     p.triangle(centerX - base / 2, centerY + heightTriangle / 2, centerX + base / 2, centerY + heightTriangle/2, centerX, centerY - heightTriangle / 2);
+                        addDimension(p, centerX - base/2, centerY + heightTriangle/2, base, 'horizontal', base, heightTriangle)
+                     addDimension(p, centerX, centerY + heightTriangle / 2, heightTriangle, 'vertical', base, heightTriangle)
+
+                   break;
+             case 'table':
+                  const tableWidth = dimensions.width || 100;
+                  const tableHeight = dimensions.height || 70;
+                  const tableDepth = dimensions.depth || 80;
+
+                  p.rectMode(p.CENTER);
+                  p.rect(centerX, centerY, tableWidth, tableDepth);
+                     addDimension(p, centerX - tableWidth/2, centerY - tableDepth/2, tableWidth, 'horizontal', tableWidth, tableDepth)
+                    addDimension(p, centerX - tableWidth/2, centerY - tableDepth/2, tableDepth, 'vertical', tableWidth, tableDepth)
+                  const legWidth = tableWidth / 10
+                  const legDepth = tableDepth / 10
+
+                   p.rect(centerX - tableWidth/2 + legWidth/2, centerY + tableDepth/2 + tableHeight/2 - legHeight/2, legWidth, tableHeight)
+                   p.rect(centerX + tableWidth/2 - legWidth/2, centerY + tableDepth/2 + tableHeight/2 - legHeight/2, legWidth, tableHeight)
+                   p.rect(centerX + tableWidth/2 - legWidth/2, centerY - tableDepth/2 - tableHeight/2 + legHeight/2, legWidth, tableHeight)
+                    p.rect(centerX - tableWidth/2 + legWidth/2, centerY - tableDepth/2 - tableHeight/2 + legHeight/2, legWidth, tableHeight)
+
+                      break;
+             case 'chair':
+                   const chairWidth = dimensions.width || 100;
+                    const chairHeight = dimensions.height || 70;
+                    const chairDepth = dimensions.depth || 80;
+
+                  p.rectMode(p.CENTER);
+                    p.rect(centerX, centerY, chairWidth, chairDepth);
+                       addDimension(p, centerX - chairWidth/2, centerY - chairDepth/2, chairWidth, 'horizontal', chairWidth, chairDepth)
+                    addDimension(p, centerX - chairWidth/2, centerY - chairDepth/2, chairDepth, 'vertical', chairWidth, chairDepth)
+
+                   const legWidthChair = chairWidth/10
+                    const legDepthChair = chairDepth/10
+                    const legHeight = chairHeight / 2
+                  p.rect(centerX - chairWidth/2 + legWidthChair/2, centerY + chairDepth/2 + legHeight/2, legWidthChair, legHeight)
+                  p.rect(centerX + chairWidth/2 - legWidthChair/2, centerY + chairDepth/2 + legHeight/2, legWidthChair, legHeight)
+                  p.rect(centerX + chairWidth/2 - legWidthChair/2, centerY - chairDepth/2 - legHeight/2, legWidthChair, legHeight)
+                   p.rect(centerX - chairWidth/2 + legWidthChair/2, centerY - chairDepth/2 - legHeight/2, legWidthChair, legHeight)
+                break;
+              case 'door':
+                  const doorWidth = dimensions.width || 100;
+                 const doorHeight = dimensions.height || 200;
+                     p.rectMode(p.CENTER);
+                   p.rect(centerX, centerY, doorWidth, doorHeight)
+                    addDimension(p, centerX - doorWidth/2, centerY - doorHeight/2, doorWidth, 'horizontal', doorWidth, doorHeight);
+                    addDimension(p, centerX - doorWidth/2, centerY - doorHeight/2, doorHeight, 'vertical', doorWidth, doorHeight);
+
+                    break;
+             case 'cylinder':
+                 const cylinderRadius = dimensions.radius || 50;
+                 const cylinderHeight = dimensions.height || cylinderRadius * 2
+                 p.ellipseMode(p.CENTER);
+                 p.ellipse(centerX, centerY - cylinderHeight/4, cylinderRadius*2, cylinderRadius/2 )
+                p.line(centerX - cylinderRadius, centerY - cylinderHeight/4 + cylinderRadius/4, centerX - cylinderRadius, centerY + cylinderHeight/4 + cylinderRadius/4 )
+                  p.line(centerX + cylinderRadius, centerY - cylinderHeight/4 + cylinderRadius/4, centerX + cylinderRadius, centerY + cylinderHeight/4 + cylinderRadius/4 )
+                 p.ellipse(centerX, centerY + cylinderHeight/4, cylinderRadius*2, cylinderRadius/2 )
+                 addDimension(p, centerX, centerY - cylinderHeight/4, cylinderRadius*2, 'horizontal', cylinderRadius*2, cylinderRadius*2)
+                  addDimension(p, centerX, centerY , cylinderHeight, 'vertical', cylinderRadius * 2, cylinderHeight)
+                break;
+             case 'cone':
+                  const coneRadius = dimensions.radius || 50;
+                 const coneHeight = dimensions.height || coneRadius * 2
+                  p.triangle(centerX - coneRadius, centerY + coneHeight/2, centerX + coneRadius, centerY + coneHeight/2, centerX, centerY - coneHeight/2)
+                   p.ellipseMode(p.CENTER);
+                     p.ellipse(centerX, centerY + coneHeight/2, coneRadius * 2, coneRadius/2);
+                   addDimension(p, centerX - coneRadius, centerY + coneHeight/2, coneRadius * 2, 'horizontal', coneRadius * 2, coneHeight);
+                   addDimension(p, centerX, centerY + coneHeight/2, coneHeight, 'vertical', coneRadius*2, coneHeight);
+
+                 break;
+                case 'sphere':
+                    const sphereRadius = dimensions.size || 50;
+                   p.ellipseMode(p.CENTER);
+                    p.circle(centerX, centerY, sphereRadius * 2)
+                    p.line(centerX - sphereRadius, centerY, centerX + sphereRadius, centerY)
+                    p.arc(centerX, centerY, sphereRadius * 2, sphereRadius * 1.3, p.PI, p.TWO_PI)
+                    addDimension(p, centerX - sphereRadius, centerY - sphereRadius, sphereRadius * 2, 'horizontal', sphereRadius * 2, sphereRadius*2)
+                   break;
+        }
+            }
+
+
+       function addDimension(p, x, y, length, direction, width, height) {
+            p.textSize(12);
+            p.fill(0);
+            p.textAlign(p.CENTER, p.CENTER);
+               let textX = x;
+               let textY = y;
+
+              if (direction === 'horizontal') {
+                textX = x + length / 2;
+                textY = y - 5;
+            } else if(direction === 'vertical') {
+                 textX = x + 5;
+                textY = y + length/2;
+            }
+
+            p.push();
+             if(direction === "vertical"){
+                   p.translate(textX, textY);
+                   p.rotate(-p.HALF_PI);
+                    p.text(length, 0, 0);
+             }else{
+                  p.text(length, textX, textY);
+            }
+
+            p.pop();
+
+        }
+
+    }
+}
+
+init();
+    </script>
+</body>
+</html>
+
